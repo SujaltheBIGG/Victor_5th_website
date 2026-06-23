@@ -274,86 +274,50 @@
   var scrollHint = document.getElementById("seqhero-scroll");
 
   var images = new Array(FRAME_COUNT);
-  var loaded = new Array(FRAME_COUNT);
-  var requested = new Array(FRAME_COUNT);
   var state = { frame: 0 };
-  var rafPending = false;
 
   function resize(){
     var dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.floor(canvas.clientWidth * dpr);
     canvas.height = Math.floor(canvas.clientHeight * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw();
+    render();
   }
 
-  function nearest(idx){
-    if(loaded[idx]) return idx;
-    for(var d = 1; d < FRAME_COUNT; d++){
-      if(idx - d >= 0 && loaded[idx - d]) return idx - d;
-      if(idx + d < FRAME_COUNT && loaded[idx + d]) return idx + d;
-    }
-    return -1;
-  }
-
-  function draw(){
-    rafPending = false;
-    var idx = state.frame | 0;
-    var use = loaded[idx] ? idx : nearest(idx);
-    if(use < 0) return;
-    var img = images[use];
-    if(!img || !img.naturalWidth) return;
+  function render(){
+    var img = images[state.frame | 0];
+    if(!img || !img.complete || !img.naturalWidth) return;
     var cw = canvas.clientWidth, ch = canvas.clientHeight;
     var iw = img.naturalWidth, ih = img.naturalHeight;
     var scale = Math.max(cw / iw, ch / ih);
     var w = iw * scale, h = ih * scale;
+    var x = (cw - w) / 2, y = (ch - h) / 2;
     ctx.clearRect(0, 0, cw, ch);
-    ctx.drawImage(img, (cw - w) / 2, (ch - h) / 2, w, h);
+    ctx.drawImage(img, x, y, w, h);
   }
-
-  function scheduleDraw(){ if(!rafPending){ rafPending = true; requestAnimationFrame(draw); } }
 
   function loadImage(i){
-    if(i < 0 || i >= FRAME_COUNT || requested[i]) return;
-    requested[i] = true;
-    var img = new Image();
-    img.decoding = "async";
-    img.onload = img.onerror = function(){ loaded[i] = true; if((state.frame | 0) === i) scheduleDraw(); };
-    img.src = FRAME_PATH(i + 1);
-    images[i] = img;
+    return new Promise(function(resolve){
+      var img = new Image();
+      img.onload = img.onerror = function(){ resolve(); };
+      img.src = FRAME_PATH(i + 1);
+      images[i] = img;
+    });
   }
 
-  // prioritise frames around the current scroll position
-  function render(){
-    var idx = state.frame | 0, AHEAD = 32, BEHIND = 8;
-    for(var i = idx - BEHIND; i <= idx + AHEAD; i++) loadImage(i);
-    scheduleDraw();
-  }
-
-  // fill the remaining frames quietly during idle time
-  function startIdleFill(){
-    var k = 0;
-    var ric = window.requestIdleCallback || function(cb){ return setTimeout(function(){ cb({ timeRemaining:function(){ return 6; } }); }, 250); };
-    (function step(deadline){
-      var budget = 0;
-      while(k < FRAME_COUNT && deadline.timeRemaining() > 3 && budget < 6){
-        if(!requested[k]){ loadImage(k); budget++; }
-        k++;
-      }
-      if(k < FRAME_COUNT) ric(step);
-    })({ timeRemaining:function(){ return 6; } });
-  }
-
-  loadImage(0);
-  (function waitFirst(){
-    if(loaded[0]){
-      resize();
-      if(loader) loader.classList.add("is-hidden");
-      setupScroll();
-      render();
-      startIdleFill();
-    } else { requestAnimationFrame(waitFirst); }
-  })();
+  loadImage(0).then(function(){
+    resize();
+    if(loader) loader.classList.add("is-hidden");
+    setupScroll();
+    var i = 1;
+    function next(){
+      if(i >= FRAME_COUNT) return;
+      var batch = [];
+      for(var n = 0; n < 12 && i < FRAME_COUNT; n++, i++) batch.push(loadImage(i));
+      Promise.all(batch).then(function(){ render(); next(); });
+    }
+    next();
+  });
 
   function setupScroll(){
     window.addEventListener("resize", resize);
